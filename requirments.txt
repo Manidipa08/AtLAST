@@ -1,0 +1,7 @@
+maria
+scipy
+numpy
+astropy
+reproject
+matplotlib
+photutils
