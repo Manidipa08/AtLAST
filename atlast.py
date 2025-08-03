@@ -38,12 +38,15 @@ class AtLAST:
         self.frame = 'ra_dec'
         self.allowed_units = ['uK_RJ','rad','deg','arcmin','arcsec','s','min','hour','day','week','year','g','m','Hz','W√s','K√s','K_RJ','F_RJ','K_b','K_CMB','W','Jy','Jy/pixel']
         self.allowed_shapes = ['hexagon','circular']
-        self.allowed_scan_patterns = ['daisy']
+        self.allowed_scan_patterns = ['daisy', 'double_circle', 'lissajous',  'back_and_forth', 'stare']
         self.allowed_band_shape = ['gaussian']
         self.allowed_atmospheres = ['2d','3d']
         self._logger = ""
         self.seed_value = None
         self.input_file_path = None
+        self.radial_new_stuff = None
+        self.fwhm_rad_inv = None 
+        self.fov_rad_inv = None 
         if file_path is not None:
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"The file {file_path} does not exist.")
@@ -103,7 +106,7 @@ class AtLAST:
                 "n": n, # numbers of detectors
                 "bands": self.bands,
                 }
-        
+        self.fov_rad_inv = (1/np.deg2rad(field_of_view))        
         if shape not in self.allowed_shapes:
             raise ValueError(f"Invalid shape. Allowed shapes are: {self.allowed_shapes}")
         
@@ -134,6 +137,44 @@ class AtLAST:
                                 frame=self.frame,
                                 scan_center= scan_center # in degrees
                                 )#time taken as mentioned the configuration in Maria paper
+        elif scan_pattern == 'double_circle':
+            self.track = maria.get_plan(start_time=start_time,
+                                scan_pattern=scan_pattern,
+                                scan_options=scan_options, # e.g., {'radius': 2, 'speed': 0.25, 'miss_freq': 10.1}
+                                duration=duration, # in seconds
+                                sample_rate=sample_rate, # in Hz
+                                frame=self.frame,
+                                scan_center= scan_center # in degrees
+                                )
+        elif scan_pattern == 'lissajous':
+            self.track = maria.get_plan(start_time=start_time,
+                                scan_pattern=scan_pattern,
+                                scan_options=scan_options, # e.g., {'radius, speed}
+                                duration=duration, # in seconds
+                                sample_rate=sample_rate, # in Hz
+                                frame=self.frame,
+                                scan_center= scan_center # in degrees
+                                )
+
+
+        elif scan_pattern == 'back_and_forth':
+            self.track = maria.get_plan(start_time=start_time,
+                                scan_pattern=scan_pattern,
+                                scan_options=scan_options, # e.g., {'radius': 5, 'speed': 0.5}
+                                duration=duration, # in seconds
+                                sample_rate=sample_rate, # in Hz
+                                frame=self.frame,
+                                scan_center= scan_center # in degrees
+                                )
+        elif scan_pattern == 'stare':
+            self.track = maria.get_plan(start_time=start_time,
+                                scan_pattern=scan_pattern,
+                                scan_options=scan_options, # e.g., {'amplitude': 1, 'frequency': 1};{}
+                                duration=duration, # in seconds
+                                sample_rate=sample_rate, # in Hz
+                                frame=self.frame,
+                                scan_center= scan_center # in degrees
+                                )
         self._log_data(f"Scanning pattern created: {self.track}")
         print(self.track)
         return self.track
@@ -270,7 +311,7 @@ class AtLAST:
                 tod_val= sim.run()
                 self.tod.append(tod_val)
                 self._log_data(f"Simulation computed for {i} sample: {sim}")
-                pickle.dump(tod_val, open(f"tod_data_{i}.pkl", "wb"))
+                # pickle.dump(tod_val, open(f"tod_data_{i}.pkl", "wb"))
             return self.tod # list
                 
     
@@ -490,11 +531,13 @@ class AtLAST:
             profile_inp = radial_inp.profile[:min_len]
             profile_outp = radial_outp.profile[:min_len]
             radii = radial_inp.radius[:min_len]
-
+            self.radial_new_stuff = radial_outp.profile 
             # Compute transfer function
             # eps = 1e-10  # To avoid divide-by-zero
-            transfer_function = np.abs(profile_outp/ (profile_inp))
-            transfer_function = np.abs(transfer_function/np.max(transfer_function))
+            print("Computing transfer function sqrt")
+            transfer_function = np.sqrt(profile_outp/ (profile_inp))
+            print("Computing transfer function done")
+            # transfer_function = (transfer_function/np.max(transfer_function))
             edge_radii = edge_radii[0:len(transfer_function)]
             self._log_data(f"Transfer function computed: {transfer_function}")
             print("Transfer function computed")
@@ -531,9 +574,10 @@ class AtLAST:
 
                 # Compute transfer function
                 # eps = 1e-10  # To avoid divide-by-zero
-                transfer_function.append(profile_outp[i]/ (profile_inp[i]))
-                transfer_function[i] = np.abs(transfer_function[i]/np.max(transfer_function[i]))
+                transfer_function.append(np.sqrt(profile_outp[i]/ (profile_inp[i])))
+                # transfer_function[i] = (transfer_function[i]/np.max(transfer_function[i]))
                 edge_radii = edge_radii[0:len(transfer_function[i])]
+                self.radial_new_stuff = radial_outp[i].profile
                 self._log_data(f"Transfer function computed for {i} sample: {transfer_function}")
             print("Transfer function computed")
             return transfer_function, edge_radii, max_radius            
@@ -547,15 +591,27 @@ class AtLAST:
         fwhm = self.fwhm_instrument(instrument)
         edge_radii=np.linspace(0,max_radius,100*max_radius)#radial frequency bins; radians/pixel; k = no. of rad/lambda in definition, k*lambda = no. of rad/pixels
         fwhm_rad = fwhm
+        self.fwhm_rad_inv = 1/fwhm_rad #in radians^-1
         if self.nsample==1:
             # sigma_beam = fwhm_rad / np.sqrt(8 * np.log(2)) #in radians
             scale = fwhm.to(u.deg).value/np.sqrt(8.00*np.log(2.00))/outhdu.header['CDELT2']
             print(scale)
             nx_beam, ny_beam = inp_data.shape
+            deg = outhdu.header['CDELT2']
+            rad = np.deg2rad(deg)
+            # edge_radii_safe = np.copy(radial_profile_beam.radius)
+            # edge_radii_safe[edge_radii_safe==0] = np.nan
+            # spat_freq = ((radial_profile_beam.radius*2)/(rad*(nx_beam)))
+
         else:
             scale = fwhm.to(u.deg).value/np.sqrt(8.00*np.log(2.00))/outhdu[0].header['CDELT2']
             print(scale)
             nx_beam, ny_beam = inp_data[0].shape
+            deg = outhdu[0].header['CDELT2']
+            rad = np.deg2rad(deg)
+            # edge_radii_safe = np.copy(radial_profile_beam.radius)
+            # edge_radii_safe[edge_radii_safe==0] = np.nan
+            # spat_freq = ((radial_profile_beam.radius*2)/(rad*(nx_beam)))
         # Beam transfer function
         sigma_beam_dimensionless = scale
         beam_size = int(sigma_beam_dimensionless)  # Convert to pixels
@@ -573,13 +629,18 @@ class AtLAST:
             theta=0  # Assuming no rotation
         )
         gaussian_beam_2D = gaussian_beam_model(x_beam, y_beam)
-        beam_psd_2D = np.abs(np.fft.fftshift(np.fft.fft2(gaussian_beam_2D)))**2
-        radial_profile_beam = RadialProfile(beam_psd_2D, (nx_beam/2, ny_beam/2), edge_radii)
+        beam_psd_2D = np.abs(np.fft.fftshift(np.fft.fft2(gaussian_beam_2D)))
+    
+        radial_profile_beam = RadialProfile(beam_psd_2D, (nx_beam/2, ny_beam/2), edge_radii) 
         beam_psd = radial_profile_beam.profile / max(radial_profile_beam.profile)
+        spatial_freq = ((radial_profile_beam.radius*2)/(rad*(nx_beam)))
+
+        # spatial_freq = (edge_radii_safe / (rad*len(self.radial_new_stuff)))
         self._log_data(f"Beam power spectrum computed: {beam_psd}")
         print("Beam transfer function computation completed")
         # gaussian_beam_2D = np.exp(-((x_beam - nx_beam/(2))**2
-        return beam_psd, edge_radii, fwhm_rad, sigma_beam_dimensionless
+        return beam_psd, spatial_freq, fwhm_rad, sigma_beam_dimensionless
+    
         
 
     #########################PLOTTING FUNCTIONS###########################
@@ -734,12 +795,12 @@ class AtLAST:
                     plt.show()
 
 
-    def transfer_function_plot(self, transfer_function, edge_radii, scale:str= 'log' ,save: bool = False):
+    def transfer_function_plot(self, transfer_function, edge_radii, scale= ('linear', 'linear') ,save: bool = False, file_name = 'transfer_function.png'):
         if self.nsample == 1:
             plt.figure(figsize=(8, 5))
             plt.plot(edge_radii, transfer_function, label='Transfer Function')
-            plt.xscale(scale)
-            plt.yscale(scale)
+            plt.xscale(scale[0])
+            plt.yscale(scale[1])
             plt.xlabel("Spatial Frequency")
             plt.ylabel("T(k)")
             plt.title("Transfer Function from Precomputed Power Spectra")
@@ -747,7 +808,7 @@ class AtLAST:
             plt.legend()
             plt.tight_layout()
             if save:
-                plt.savefig("transfer_function.png")
+                plt.savefig(file_name)
                 plt.close()  # Close the figure after saving
             else:
                 plt.show()
@@ -756,8 +817,8 @@ class AtLAST:
             for i in range(self.nsample):
                 min_len = min(len(edge_radii), len(transfer_function[i]))
                 plt.plot(edge_radii[:min_len], transfer_function[i][:min_len], label=f'Transfer Function {i}')
-            plt.xscale(scale)
-            plt.yscale(scale)
+            plt.xscale(scale[0])
+            plt.yscale(scale[1])
             plt.xlabel("Spatial Frequency")
             plt.ylabel("T(k)")
             plt.title("Transfer Function from Precomputed Power Spectra")
@@ -770,35 +831,46 @@ class AtLAST:
             else:
                 plt.show()
 
-    def beam_ps_plot(self, beam_psd, edge_radii, transfer_function, scale: str = 'linear' ,save: bool = False):
+    def beam_ps_plot(self, beam_psd, spatial_freq, transfer_function, scale = ('linear', 'linear') ,save: bool = False, file_name = 'transfer_function_and_beam_ps.png'):
         if self.nsample == 1:
             plt.figure(figsize=(8, 5))  # Create new figure
-            plt.plot(edge_radii[:len(beam_psd)], beam_psd,  label='Beam Power Spectrum', linestyle='--')
-            plt.axhline(0.5, color='black', linestyle='--', label='FWHM')
-            plt.plot(edge_radii[:len(beam_psd)], transfer_function, label='Transfer Function')
-            plt.xscale(scale)
-            plt.yscale(scale)
-            plt.xlabel("Spatial Frequency")
+            plt.plot(spatial_freq, beam_psd,  label='Beam Power Spectrum', linestyle='--')
+            if self.fwhm_rad_inv is None and self.fov_rad_inv is None:
+                raise ValueError("fwhm_rad_inv and fov_rad_inv must be set before plotting")
+            
+            plt.axhline(0.5, color='grey', linestyle='--', label='FWHM=0.5')
+            plt.axvline(1.22e4, color='black', linestyle='--', label='FWHM')
+            plt.axvline(229.2, color='purple', linestyle='--', label='FoV')
+            plt.plot(spatial_freq, transfer_function, label='Transfer Function')
+            plt.xscale(scale[0])
+            plt.yscale(scale[1])
+            plt.xlim(1e1,max(spatial_freq))
+            plt.xlabel("Spatial Frequency (in rad$^{-1}$ unit)")
             plt.ylabel("T(k)")
             plt.title("Transfer Function and Beam Power Spectrum")
             plt.grid(True)
             plt.legend()
             plt.tight_layout()
             if save:
-                plt.savefig("transfer_function_and_beam_ps.png")
+                plt.savefig(file_name)
                 plt.close()  # Close the figure after saving
             else:
                 plt.show()
         else:
             plt.figure(figsize=(8, 5))  # Create new figure
-            plt.plot(edge_radii[:len(beam_psd)], beam_psd,  label='Beam Power Spectrum', linestyle='--')
-            plt.axhline(0.5, color='black', linestyle='--', label='FWHM')
+            plt.plot(spatial_freq, beam_psd,  label='Beam Power Spectrum', linestyle='--')
+            if self.fwhm_rad_inv is None and self.fov_rad_inv is None:
+                raise ValueError("fwhm and field of view must be set before plotting")
+            plt.axhline(0.5, color='grey', linestyle='--', label='FWHM=0.5')
+            plt.axvline(1.22e4, color='black', linestyle='--', label='FWHM')
+            plt.axvline(229.2, color='purple', linestyle='--', label='FoV')
             for i in range(self.nsample):
-                min_len = min(len(edge_radii[:len(beam_psd)]), len(transfer_function[i]))
-                plt.plot(edge_radii[:min_len], transfer_function[i][:min_len], label=f'Transfer Function {i}')
-            plt.xscale(scale)
-            plt.yscale(scale)
-            plt.xlabel("Spatial Frequency")
+                min_len = min(len(spatial_freq), len(transfer_function[i]))
+                plt.plot(spatial_freq[:min_len], transfer_function[i][:min_len], label=f'Transfer Function {i}')
+            plt.xscale(scale[0])
+            plt.yscale(scale[1])
+            plt.xlim(1e1,max(spatial_freq))
+            plt.xlabel("Spatial Frequency (in rad$^{-1}$ unit)")
             plt.ylabel("T(k)")
             plt.title(f"Transfer Function and Beam Power Spectrum for all samples")
             plt.grid(True)
@@ -810,21 +882,26 @@ class AtLAST:
             else:
                 plt.show()
 
-    def transfer_function_avg_plot(self, beam_psd, edge_radii, transfer_function, scale: str = 'linear' ,save: bool = False):
+    def transfer_function_avg_plot(self, beam_psd, spatial_freq, transfer_function, scale = ('linear', 'linear') ,save: bool = False):
         if self.nsample == 1:
             print("Error: average cant be calculated for single sample")
         else:
             plt.figure(figsize=(8, 5))  # Create new figure
-            plt.plot(edge_radii[:len(beam_psd)], beam_psd,  label='Beam Power Spectrum', linestyle='--')
-            plt.axhline(0.5, color='black', linestyle='--', label='FWHM')
+            plt.plot(spatial_freq, beam_psd,  label='Beam Power Spectrum', linestyle='--')
+            if self.fwhm_rad_inv is None and self.fov_rad_inv is None:
+                raise ValueError("fwhm_rad_inv and fov_rad_inv must be set before plotting")
+            plt.axhline(0.5, color='grey', linestyle='--', label='FWHM=0.5')
+            plt.axvline(1.22e4, color='black', linestyle='--', label='FWHM')
+            plt.axvline(229.2, color='purple', linestyle='--', label='FoV')
             min_tf_len = min(len(tf) for tf in transfer_function)
-            min_len = min(len(edge_radii[:len(beam_psd)]), min_tf_len)
+            min_len = min(len(spatial_freq), min_tf_len)
             updated_tf = [tf[:min_len] for tf in transfer_function]
             avg_tf = np.mean(updated_tf, axis=0)
-            plt.plot(edge_radii[:min_len], avg_tf[:min_len], label=f'Average Transfer Function')
-            plt.xscale(scale)
-            plt.yscale(scale)
-            plt.xlabel("Spatial Frequency")
+            plt.plot(spatial_freq[:min_len], avg_tf[:min_len], label=f'Average Transfer Function')
+            plt.xscale(scale[0])
+            plt.yscale(scale[1])
+            plt.xlim(1e1,max(spatial_freq))
+            plt.xlabel("Spatial Frequency (in rad$^{-1}$ unit)")
             plt.ylabel("T(k)")
             plt.title(f"Transfer Function Average and Beam Power Spectrum ")
             plt.grid(True)
