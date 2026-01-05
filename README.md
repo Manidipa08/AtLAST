@@ -87,7 +87,7 @@ sim.beam_ps_plot(beam_psd, edge_radii, tf, scale='linear', save=True)
 - All simulation steps are logged internally, and users can save the log file using the `save_log_file` method for later review or reproducibility.
 
 ## Link to my Master's thesis
-- [Characterizing the Large-Scale Recovery Capabilities of Atacama Large Aperture Submillimeter Telescope (AtLAST)](https://www.dropbox.com/scl/fi/kh4j676qeo1zikoi4nt5o/MASTER_THESIS_MANIDIPA.pdf?rlkey=tal6692q5h4m4ojz4bae7sk3v&e=1&st=dq711jry&dl=0)
+- [Characterizing the Large-Scale Recovery Capabilities of Atacama Large Aperture Submillimeter Telescope (AtLAST)](https://www.master-mass.eu/wp-content/uploads/2025/12/MASTER_THESIS_MANIDIPA_BANERJEE.pdf)
 
 ## References
 - [AtLAST Project](https://atlast-telescope.org/)
